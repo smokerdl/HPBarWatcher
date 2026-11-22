@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -23,7 +22,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config.settings import AppSettings, Region, ResourceSettings, load_settings, save_settings
+from app.automation.keyboard_input import KeyBinding, KeyboardSender
+from app.automation.trigger_manager import ThresholdTrigger
+from app.config.settings import Region, ResourceSettings, load_settings, save_settings
+from app.ui.key_capture import KeyCaptureButton
 from app.vision.bar_detector import BarDetector, ResourceReadout
 from app.vision.screen_capture import ScreenCapture
 from app.ui.region_selector import RegionSelector
@@ -38,6 +40,13 @@ class MainWindow(QMainWindow):
         self.capture: ScreenCapture | None = None
         self.detector = BarDetector(self.settings.bar_width_px)
         self._selector: RegionSelector | None = None
+        self.triggers = {name: ThresholdTrigger() for name in ("hp", "es", "mana")}
+        self.keyboard: KeyboardSender | None = None
+        self.keyboard_error: str | None = None
+        try:
+            self.keyboard = KeyboardSender()
+        except (OSError, AttributeError) as exc:
+            self.keyboard_error = str(exc)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_screen)
         self._build_ui()
@@ -50,7 +59,7 @@ class MainWindow(QMainWindow):
 
         title = QLabel("HPBarWatcher")
         title.setStyleSheet("font-size: 22px; font-weight: 700;")
-        subtitle = QLabel("Этап 1 · Распознавание ресурсов без нажатия клавиш")
+        subtitle = QLabel("Отслеживание HP, энергощита и маны · реакция на пороги")
         subtitle.setStyleSheet("color: #777;")
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -76,7 +85,7 @@ class MainWindow(QMainWindow):
 
         settings_box = QGroupBox("Настройки ресурсов")
         form = QFormLayout(settings_box)
-        self.resource_controls: dict[str, tuple[QCheckBox, QDoubleSpinBox, QLineEdit]] = {}
+        self.resource_controls: dict[str, tuple[QCheckBox, QDoubleSpinBox, KeyCaptureButton]] = {}
         for key, label, default_threshold, default_key in (
             ("hp", "HP", 30.0, "1"),
             ("es", "Энергощит", 20.0, "3"),
@@ -91,19 +100,35 @@ class MainWindow(QMainWindow):
             threshold.setDecimals(1)
             threshold.setSuffix(" %")
             threshold.setFixedWidth(105)
-            key_edit = QLineEdit(default_key)
-            key_edit.setMaxLength(20)
-            key_edit.setPlaceholderText("Клавиша")
-            key_edit.setFixedWidth(95)
+            key_button = KeyCaptureButton(default_key)
             row_layout.addWidget(enabled)
             row_layout.addWidget(QLabel("Порог:"))
             row_layout.addWidget(threshold)
             row_layout.addWidget(QLabel("Клавиша:"))
-            row_layout.addWidget(key_edit)
+            row_layout.addWidget(key_button)
             row_layout.addStretch(1)
             form.addRow(label, row)
-            self.resource_controls[key] = (enabled, threshold, key_edit)
+            self.resource_controls[key] = (enabled, threshold, key_button)
+            key_button.binding_changed.connect(
+                lambda label, scan, ext, resource=key: self._on_key_binding_changed(resource, label, scan, ext)
+            )
         layout.addWidget(settings_box)
+
+        action_box = QGroupBox("Автоматическое нажатие")
+        action_layout = QHBoxLayout(action_box)
+        self.auto_actions_check = QCheckBox("Включить автонажатия")
+        self.auto_actions_check.setToolTip(
+            "Клавиши отправляются только при обнаруженном HP-баре и активном окне игры."
+        )
+        self.hold_duration_spin = QSpinBox()
+        self.hold_duration_spin.setRange(20, 500)
+        self.hold_duration_spin.setSuffix(" мс")
+        self.hold_duration_spin.setFixedWidth(100)
+        action_layout.addWidget(self.auto_actions_check)
+        action_layout.addStretch(1)
+        action_layout.addWidget(QLabel("Длительность нажатия:"))
+        action_layout.addWidget(self.hold_duration_spin)
+        layout.addWidget(action_box)
 
         technical_box = QGroupBox("Параметры распознавания")
         technical_form = QFormLayout(technical_box)
@@ -147,7 +172,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.preview)
 
         buttons = QHBoxLayout()
-        self.start_button = QPushButton("Начать диагностику")
+        self.start_button = QPushButton("Начать мониторинг")
         self.stop_button = QPushButton("Остановить")
         self.stop_button.setEnabled(False)
         self.start_button.clicked.connect(self._start)
@@ -158,10 +183,10 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel("Ожидание настройки области")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("padding: 7px; background: #292f36; border-radius: 4px;")
+        self.status_label.setStyleSheet("padding: 3px 0;")
         layout.addWidget(self.status_label)
 
-        note = QLabel("Диагностический режим не нажимает клавиши. Настройки порогов и клавиш пока сохраняются для следующего этапа.")
+        note = QLabel("Автонажатия выключены. Включай их после настройки клавиш и порогов.")
         note.setWordWrap(True)
         note.setStyleSheet("color: #9a7b45; font-size: 11px;")
         layout.addWidget(note)
@@ -175,17 +200,27 @@ class MainWindow(QMainWindow):
         self.always_on_top_check.toggled.connect(self._on_always_on_top_toggled)
         self._apply_window_stacking(self.settings.always_on_top)
         for name, resource in (("hp", self.settings.hp), ("es", self.settings.es), ("mana", self.settings.mana)):
-            enabled, threshold, key_edit = self.resource_controls[name]
+            enabled, threshold, key_button = self.resource_controls[name]
             enabled.setChecked(resource.enabled)
             threshold.setValue(resource.threshold)
-            key_edit.setText(resource.key)
+            key_button.key_label = resource.key
+            if resource.scan_code:
+                key_button.scan_code = resource.scan_code
+                key_button.extended = resource.extended
+            key_button._refresh_text()
             enabled.stateChanged.connect(self._save_controls)
             threshold.valueChanged.connect(self._save_controls)
-            key_edit.textChanged.connect(self._save_controls)
+        self.auto_actions_check.setChecked(self.settings.auto_actions_enabled)
+        self.auto_actions_check.toggled.connect(self._on_auto_actions_toggled)
+        self.hold_duration_spin.setValue(self.settings.key_hold_ms)
+        self.hold_duration_spin.valueChanged.connect(self._save_controls)
         self.width_spin.setValue(self.settings.bar_width_px)
         self.interval_spin.setValue(self.settings.poll_interval_ms)
         self.width_spin.valueChanged.connect(self._save_controls)
         self.interval_spin.valueChanged.connect(self._save_controls)
+        if self.keyboard is None:
+            self.auto_actions_check.setEnabled(False)
+            self.auto_actions_check.setToolTip(f"SendInput недоступен: {self.keyboard_error}")
 
     def _apply_window_stacking(self, enabled: bool) -> None:
         """Toggle always-on-top while preserving visibility and avoiding focus theft."""
@@ -206,10 +241,35 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             self.status_label.setText(f"Не удалось сохранить настройки: {exc}")
 
+    def _on_auto_actions_toggled(self, enabled: bool) -> None:
+        self.settings.auto_actions_enabled = enabled
+        for trigger in self.triggers.values():
+            trigger.reset()
+        self._save_controls()
+        self.status_label.setText(
+            "Автонажатия включены. Срабатывание — только при переходе ниже порога."
+            if enabled else "Автонажатия выключены."
+        )
+
+    def _on_key_binding_changed(self, resource: str, label: str, scan_code: int, extended: bool) -> None:
+        self._save_controls()
+        self.status_label.setText(
+            f"{resource.upper()}: физическая клавиша {label}, scan code 0x{scan_code:02X}."
+        )
+
     def _save_controls(self, *_args) -> None:
         for name in ("hp", "es", "mana"):
-            enabled, threshold, key_edit = self.resource_controls[name]
-            setattr(self.settings, name, ResourceSettings(enabled.isChecked(), threshold.value(), key_edit.text().strip()))
+            enabled, threshold, key_button = self.resource_controls[name]
+            setattr(
+                self.settings,
+                name,
+                ResourceSettings(
+                    enabled.isChecked(), threshold.value(), key_button.key_label,
+                    key_button.scan_code, key_button.extended
+                ),
+            )
+        self.settings.auto_actions_enabled = self.auto_actions_check.isChecked()
+        self.settings.key_hold_ms = self.hold_duration_spin.value()
         self.settings.bar_width_px = self.width_spin.value()
         self.settings.poll_interval_ms = self.interval_spin.value()
         try:
@@ -244,7 +304,7 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
-        self.status_label.setText("Область сохранена. Можно запускать диагностику.")
+        self.status_label.setText("Область сохранена. Можно запускать мониторинг.")
 
     def _start(self) -> None:
         if self.settings.region is None:
@@ -256,6 +316,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка захвата экрана", str(exc))
             return
         self.detector = BarDetector(self.width_spin.value())
+        for trigger in self.triggers.values():
+            trigger.reset()
         self.timer.start(self.interval_spin.value())
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -264,6 +326,10 @@ class MainWindow(QMainWindow):
 
     def _stop(self) -> None:
         self.timer.stop()
+        if self.keyboard is not None:
+            self.keyboard.release_all()
+        for trigger in self.triggers.values():
+            trigger.reset()
         if self.capture is not None:
             self.capture.close()
             self.capture = None
@@ -283,6 +349,41 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.status_label.setText(f"Ошибка захвата/анализа: {exc}")
 
+    def _process_triggers(self, result: ResourceReadout) -> list[str]:
+        values = {"hp": result.hp, "es": result.es, "mana": result.mana}
+        foreground_ok = (
+            self.settings.auto_actions_enabled
+            and self.keyboard is not None
+            and self.keyboard.foreground_is_external()
+        )
+        actions: list[str] = []
+        for name, value in values.items():
+            enabled, threshold, key_button = self.resource_controls[name]
+            should_fire = self.triggers[name].update(
+                value,
+                threshold.value(),
+                detected=result.detected,
+                enabled=enabled.isChecked() and foreground_ok,
+            )
+            if not should_fire:
+                continue
+            if self.keyboard is None or key_button.scan_code <= 0:
+                actions.append(f"{name.upper()}: клавиша не назначена")
+                continue
+            try:
+                sent = self.keyboard.tap(
+                    KeyBinding(key_button.scan_code, key_button.extended),
+                    self.hold_duration_spin.value(),
+                )
+                if sent:
+                    actions.append(
+                        f"{name.upper()} ниже {threshold.value():g}% → "
+                        f"{key_button.key_label} ({self.hold_duration_spin.value()} мс)"
+                    )
+            except (OSError, ValueError) as exc:
+                actions.append(f"Ошибка отправки {name.upper()}: {exc}")
+        return actions
+
     def _show_preview(self, frame: np.ndarray) -> None:
         height, width, _ = frame.shape
         image = QImage(frame.data, width, height, frame.strides[0], QImage.Format.Format_RGB888).copy()
@@ -293,6 +394,8 @@ class MainWindow(QMainWindow):
 
     def _show_readout(self, result: ResourceReadout) -> None:
         if not result.detected:
+            for trigger in self.triggers.values():
+                trigger.reset()
             for key in self.value_bars:
                 self.value_bars[key].setValue(0)
                 self.value_labels[key].setText("—")
@@ -302,15 +405,19 @@ class MainWindow(QMainWindow):
         for key, value in values.items():
             self.value_bars[key].setValue(int(round(value * 10)))
             self.value_labels[key].setText(f"{value:.1f}%")
-        self.status_label.setText(
-            f"{result.message} · X={result.bar_x}, Y(HP)={result.hp_y:.1f} · уверенность {result.confidence:.0%}"
-        )
+        actions = self._process_triggers(result)
+        if actions:
+            self.status_label.setText("Нажатие: " + " · ".join(actions))
+        else:
+            self.status_label.setText(
+                f"{result.message} · X={result.bar_x}, Y(HP)={result.hp_y:.1f} · уверенность {result.confidence:.0%}"
+            )
 
     def _set_idle_status(self) -> None:
         if self.settings.region is None:
             self.status_label.setText("Сначала выбери область, в которой обычно расположен HP-бар.")
         else:
-            self.status_label.setText("Область загружена. Нажми «Начать диагностику».")
+            self.status_label.setText("Область загружена. Нажми «Начать мониторинг».")
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._stop()

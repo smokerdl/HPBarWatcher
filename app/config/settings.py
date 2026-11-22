@@ -36,12 +36,16 @@ class ResourceSettings:
     enabled: bool = True
     threshold: float = 30.0
     key: str = "1"
+    scan_code: int = 0
+    extended: bool = False
 
 
 @dataclass
 class AppSettings:
     region: Region | None = None
     always_on_top: bool = False
+    auto_actions_enabled: bool = False
+    key_hold_ms: int = 50
     bar_width_px: int = 82
     poll_interval_ms: int = 50
     hp: ResourceSettings = field(default_factory=lambda: ResourceSettings(True, 30.0, "1"))
@@ -64,6 +68,8 @@ def load_settings(path: Path | None = None) -> AppSettings:
         return AppSettings(
             region=Region.from_dict(data.get("region")),
             always_on_top=bool(data.get("always_on_top", False)),
+            auto_actions_enabled=bool(data.get("auto_actions_enabled", False)),
+            key_hold_ms=_bounded_int(data.get("key_hold_ms", 50), 20, 500, 50),
             bar_width_px=_bounded_int(data.get("bar_width_px", 82), 40, 240, 82),
             poll_interval_ms=_bounded_int(data.get("poll_interval_ms", 50), 33, 250, 50),
             hp=_resource_from_dict(data.get("hp"), ResourceSettings(True, 30.0, "1")),
@@ -98,4 +104,8 @@ def _resource_from_dict(data: Any, fallback: ResourceSettings) -> ResourceSettin
     except (TypeError, ValueError):
         threshold = fallback.threshold
     key = str(data.get("key", fallback.key)).strip()[:20] or fallback.key
-    return ResourceSettings(bool(data.get("enabled", fallback.enabled)), threshold, key)
+    scan_code = _bounded_int(data.get("scan_code", 0), 0, 0xFF, 0)
+    return ResourceSettings(
+        bool(data.get("enabled", fallback.enabled)), threshold, key,
+        scan_code, bool(data.get("extended", False))
+    )
