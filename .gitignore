@@ -9,3 +9,7 @@ build/
 *.spec
 .vscode/
 .idea/
+
+# PyInstaller artifacts
+/build/
+/dist/
