@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
         self.preview.setMaximumHeight(155)
         self.preview.setStyleSheet("background: #20242a; color: #bbb; border-radius: 5px;")
         layout.addWidget(self.preview)
+        layout.addSpacing(10)
 
         buttons = QHBoxLayout()
         self.start_button = QPushButton("Начать мониторинг")
