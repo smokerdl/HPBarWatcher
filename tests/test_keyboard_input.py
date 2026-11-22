@@ -1,11 +1,19 @@
+import ctypes
+
 import pytest
 
 from app.automation.keyboard_input import (
     KeyBinding,
+    _INPUT,
     default_binding_for_label,
     label_for_binding,
     normalize_native_scan_code,
 )
+
+
+def test_win32_input_structure_matches_windows_abi_size():
+    expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+    assert ctypes.sizeof(_INPUT) == expected_size
 
 
 @pytest.mark.parametrize(

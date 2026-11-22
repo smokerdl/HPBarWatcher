@@ -54,15 +54,59 @@ def label_for_binding(binding: KeyBinding) -> str:
             return label
     return f"Scan {binding.scan_code:02X}"
 
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
 class _KEYBDINPUT(ctypes.Structure):
-    _fields_ = [("wVk",wintypes.WORD),("wScan",wintypes.WORD),
-                ("dwFlags",wintypes.DWORD),("time",wintypes.DWORD),
-                ("dwExtraInfo",ctypes.c_size_t)]
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
 class _INPUTUNION(ctypes.Union):
-    _fields_ = [("ki",_KEYBDINPUT)]
+    # INPUT contains the complete Win32 union, not only KEYBDINPUT.
+    # MOUSEINPUT is the largest member on 64-bit Windows (32 bytes).
+    _fields_ = [
+        ("mi", _MOUSEINPUT),
+        ("ki", _KEYBDINPUT),
+        ("hi", _HARDWAREINPUT),
+    ]
+
+
 class _INPUT(ctypes.Structure):
     _anonymous_ = ("data",)
-    _fields_ = [("type",wintypes.DWORD),("data",_INPUTUNION)]
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("data", _INPUTUNION),
+    ]
+
+
+_EXPECTED_INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+if ctypes.sizeof(_INPUT) != _EXPECTED_INPUT_SIZE:
+    raise RuntimeError(
+        f"Invalid Win32 INPUT structure size: {ctypes.sizeof(_INPUT)}; "
+        f"expected {_EXPECTED_INPUT_SIZE} for this architecture."
+    )
 
 class KeyboardSender:
     KEYBOARD=1
