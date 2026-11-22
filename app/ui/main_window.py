@@ -55,6 +55,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
+        window_options = QHBoxLayout()
+        self.always_on_top_check = QCheckBox("Поверх остальных окон")
+        self.always_on_top_check.setToolTip(
+            "Закрепить HPBarWatcher поверх окна игры и других приложений."
+        )
+        window_options.addWidget(self.always_on_top_check)
+        window_options.addStretch(1)
+        layout.addLayout(window_options)
+
         region_box = QGroupBox("Область наблюдения")
         region_layout = QHBoxLayout(region_box)
         self.region_label = QLabel("Не выбрана")
@@ -162,6 +171,9 @@ class MainWindow(QMainWindow):
     def _load_controls(self) -> None:
         if self.settings.region:
             self._set_region_label(self.settings.region)
+        self.always_on_top_check.setChecked(self.settings.always_on_top)
+        self.always_on_top_check.toggled.connect(self._on_always_on_top_toggled)
+        self._apply_window_stacking(self.settings.always_on_top)
         for name, resource in (("hp", self.settings.hp), ("es", self.settings.es), ("mana", self.settings.mana)):
             enabled, threshold, key_edit = self.resource_controls[name]
             enabled.setChecked(resource.enabled)
@@ -174,6 +186,25 @@ class MainWindow(QMainWindow):
         self.interval_spin.setValue(self.settings.poll_interval_ms)
         self.width_spin.valueChanged.connect(self._save_controls)
         self.interval_spin.valueChanged.connect(self._save_controls)
+
+    def _apply_window_stacking(self, enabled: bool) -> None:
+        """Toggle always-on-top while preserving visibility and avoiding focus theft."""
+        was_visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        if was_visible:
+            self.show()
+            if enabled:
+                self.raise_()
+            else:
+                self.lower()
+
+    def _on_always_on_top_toggled(self, enabled: bool) -> None:
+        self.settings.always_on_top = enabled
+        self._apply_window_stacking(enabled)
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            self.status_label.setText(f"Не удалось сохранить настройки: {exc}")
 
     def _save_controls(self, *_args) -> None:
         for name in ("hp", "es", "mana"):

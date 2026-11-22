@@ -41,6 +41,7 @@ class ResourceSettings:
 @dataclass
 class AppSettings:
     region: Region | None = None
+    always_on_top: bool = False
     bar_width_px: int = 82
     poll_interval_ms: int = 50
     hp: ResourceSettings = field(default_factory=lambda: ResourceSettings(True, 30.0, "1"))
@@ -62,6 +63,7 @@ def load_settings(path: Path | None = None) -> AppSettings:
         data = json.loads(target.read_text(encoding="utf-8"))
         return AppSettings(
             region=Region.from_dict(data.get("region")),
+            always_on_top=bool(data.get("always_on_top", False)),
             bar_width_px=_bounded_int(data.get("bar_width_px", 82), 40, 240, 82),
             poll_interval_ms=_bounded_int(data.get("poll_interval_ms", 50), 33, 250, 50),
             hp=_resource_from_dict(data.get("hp"), ResourceSettings(True, 30.0, "1")),
