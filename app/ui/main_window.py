@@ -186,10 +186,15 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("padding: 3px 0;")
         layout.addWidget(self.status_label)
 
-        note = QLabel("Автонажатия выключены. Включай их после настройки клавиш и порогов.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #9a7b45; font-size: 11px;")
-        layout.addWidget(note)
+        self.auto_status_label = QLabel()
+        self.auto_status_label.setWordWrap(True)
+        self.auto_status_label.setStyleSheet("color: #777; font-size: 11px;")
+        layout.addWidget(self.auto_status_label)
+
+        self.last_action_label = QLabel("Последнее срабатывание: пока не было")
+        self.last_action_label.setWordWrap(True)
+        self.last_action_label.setStyleSheet("color: #777; font-size: 11px;")
+        layout.addWidget(self.last_action_label)
 
         self.setCentralWidget(root)
 
@@ -221,6 +226,7 @@ class MainWindow(QMainWindow):
         if self.keyboard is None:
             self.auto_actions_check.setEnabled(False)
             self.auto_actions_check.setToolTip(f"SendInput недоступен: {self.keyboard_error}")
+        self._refresh_auto_status()
 
     def _apply_window_stacking(self, enabled: bool) -> None:
         """Toggle always-on-top while preserving visibility and avoiding focus theft."""
@@ -250,6 +256,22 @@ class MainWindow(QMainWindow):
             "Автонажатия включены. Срабатывание — только при переходе ниже порога."
             if enabled else "Автонажатия выключены."
         )
+        self._refresh_auto_status()
+
+    def _refresh_auto_status(self, detected: bool | None = None) -> None:
+        if not self.auto_actions_check.isChecked():
+            message = "Автонажатия выключены."
+        elif self.keyboard is None:
+            message = f"Автонажатия недоступны: {self.keyboard_error or 'SendInput не инициализирован'}."
+        elif not self.timer.isActive():
+            message = "Автонажатия включены, но мониторинг не запущен. Нажми «Начать мониторинг»."
+        elif detected is False:
+            message = "Автонажатия включены. Ожидание обнаружения HP-бара."
+        elif not self.keyboard.foreground_is_external():
+            message = "Автонажатия включены, но приостановлены: активным окном сейчас является HPBarWatcher. Переключись в игру."
+        else:
+            message = "Автонажатия включены. Ожидается падение ресурса ниже порога; уже низкое значение само по себе не вызывает нажатие. Убедись, что именно игра находится на переднем плане."
+        self.auto_status_label.setText(message)
 
     def _on_key_binding_changed(self, resource: str, label: str, scan_code: int, extended: bool) -> None:
         self._save_controls()
@@ -323,6 +345,7 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(True)
         self.select_button.setEnabled(False)
         self.status_label.setText("Мониторинг запущен. Ожидание HP-бара…")
+        self._refresh_auto_status()
 
     def _stop(self) -> None:
         self.timer.stop()
@@ -336,7 +359,8 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.select_button.setEnabled(True)
-        self.status_label.setText("Мониторинг остановлен. Никакие клавиши не нажимались.")
+        self.status_label.setText("Мониторинг остановлен.")
+        self._refresh_auto_status()
 
     def _poll_screen(self) -> None:
         if self.capture is None or self.settings.region is None:
@@ -368,7 +392,9 @@ class MainWindow(QMainWindow):
             if not should_fire:
                 continue
             if self.keyboard is None or key_button.scan_code <= 0:
-                actions.append(f"{name.upper()}: клавиша не назначена")
+                action = f"{name.upper()}: физическая клавиша не назначена"
+                actions.append(action)
+                self.last_action_label.setText("Последняя попытка: " + action)
                 continue
             try:
                 sent = self.keyboard.tap(
@@ -376,12 +402,23 @@ class MainWindow(QMainWindow):
                     self.hold_duration_spin.value(),
                 )
                 if sent:
-                    actions.append(
+                    action = (
                         f"{name.upper()} ниже {threshold.value():g}% → "
                         f"{key_button.key_label} ({self.hold_duration_spin.value()} мс)"
                     )
+                    actions.append(action)
+                    self.last_action_label.setText("Последнее срабатывание: " + action)
+                else:
+                    action = (
+                        f"{name.upper()}: порог пересечён, но SendInput не отправил клавишу. "
+                        "Возможно, в момент нажатия изменился фокус окна или эта клавиша ещё удерживается."
+                    )
+                    actions.append(action)
+                    self.last_action_label.setText("Последняя попытка: " + action)
             except (OSError, ValueError) as exc:
-                actions.append(f"Ошибка отправки {name.upper()}: {exc}")
+                action = f"Ошибка отправки {name.upper()}: {exc}"
+                actions.append(action)
+                self.last_action_label.setText("Последняя попытка: " + action)
         return actions
 
     def _show_preview(self, frame: np.ndarray) -> None:
@@ -400,6 +437,7 @@ class MainWindow(QMainWindow):
                 self.value_bars[key].setValue(0)
                 self.value_labels[key].setText("—")
             self.status_label.setText("HP-бар не обнаружен. Это состояние не считается нулевым HP.")
+            self._refresh_auto_status(detected=False)
             return
         values = {"hp": result.hp, "es": result.es, "mana": result.mana}
         for key, value in values.items():
@@ -412,6 +450,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 f"{result.message} · X={result.bar_x}, Y(HP)={result.hp_y:.1f} · уверенность {result.confidence:.0%}"
             )
+        self._refresh_auto_status(detected=True)
 
     def _set_idle_status(self) -> None:
         if self.settings.region is None:
