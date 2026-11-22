@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
         action_layout = QHBoxLayout(action_box)
         self.auto_actions_check = QCheckBox("Включить автонажатия")
         self.auto_actions_check.setToolTip(
-            "Клавиши отправляются только при обнаруженном HP-баре и активном окне игры."
+            "Клавиши отправляются при обнаруженном HP-баре, если HPBarWatcher не является активным окном. Пока отдельный процесс игры не задан, держи игру на переднем плане."
         )
         self.hold_duration_spin = QSpinBox()
         self.hold_duration_spin.setRange(20, 500)
