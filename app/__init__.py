@@ -1,0 +1,1 @@
+"""HPBarWatcher application package."""
