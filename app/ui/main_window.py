@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.automation.keyboard_input import KeyBinding, KeyboardSender
+from app.automation.keyboard_input import KeyBinding, KeyboardSender, label_for_binding
 from app.automation.trigger_manager import ThresholdTrigger
 from app.config.settings import Region, ResourceSettings, load_settings, save_settings
 from app.ui.key_capture import KeyCaptureButton
@@ -35,7 +36,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("HPBarWatcher — диагностика")
-        self.setMinimumSize(620, 590)
+        self.setMinimumSize(700, 800)
         self.settings = load_settings()
         self.capture: ScreenCapture | None = None
         self.detector = BarDetector(self.settings.bar_width_px)
@@ -84,33 +85,56 @@ class MainWindow(QMainWindow):
         layout.addWidget(region_box)
 
         settings_box = QGroupBox("Настройки ресурсов")
-        form = QFormLayout(settings_box)
+        grid = QGridLayout(settings_box)
+        grid.setContentsMargins(12, 10, 12, 10)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+        for column, width in enumerate((100, 60, 52, 110, 65, 125)):
+            grid.setColumnMinimumWidth(column, width)
+        grid.setColumnStretch(5, 1)
+        settings_box.setMinimumWidth(660)
+
         self.resource_controls: dict[str, tuple[QCheckBox, QDoubleSpinBox, KeyCaptureButton]] = {}
-        for key, label, default_threshold, default_key in (
+        for row_index, (key, label, default_threshold, default_key) in enumerate((
             ("hp", "HP", 30.0, "1"),
             ("es", "Энергощит", 20.0, "3"),
             ("mana", "Мана", 50.0, "2"),
-        ):
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
+        )):
+            resource_label = QLabel(label)
+            resource_label.setMinimumWidth(100)
             enabled = QCheckBox("Вкл.")
+            enabled.setMinimumHeight(28)
+            threshold_label = QLabel("Порог:")
+            threshold_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             threshold = QDoubleSpinBox()
             threshold.setRange(0.0, 100.0)
             threshold.setDecimals(1)
             threshold.setSuffix(" %")
-            threshold.setFixedWidth(105)
+            threshold.setFixedSize(110, 28)
+            key_label = QLabel("Клавиша:")
+            key_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             key_button = KeyCaptureButton(default_key)
-            row_layout.addWidget(enabled)
-            row_layout.addWidget(QLabel("Порог:"))
-            row_layout.addWidget(threshold)
-            row_layout.addWidget(QLabel("Клавиша:"))
-            row_layout.addWidget(key_button)
-            row_layout.addStretch(1)
-            form.addRow(label, row)
+            key_button.setMinimumHeight(28)
+
+            grid.addWidget(resource_label, row_index, 0)
+            grid.addWidget(enabled, row_index, 1)
+            grid.addWidget(threshold_label, row_index, 2)
+            grid.addWidget(threshold, row_index, 3)
+            grid.addWidget(key_label, row_index, 4)
+            grid.addWidget(
+                key_button, row_index, 5, alignment=Qt.AlignmentFlag.AlignLeft
+            )
+            grid.setRowMinimumHeight(row_index, 34)
+
             self.resource_controls[key] = (enabled, threshold, key_button)
             key_button.binding_changed.connect(
-                lambda label, scan, ext, resource=key: self._on_key_binding_changed(resource, label, scan, ext)
+                lambda label, scan, ext, modifier, resource=key: self._on_key_binding_changed(
+                    resource, label, scan, ext, modifier
+                )
             )
         layout.addWidget(settings_box)
 
@@ -135,6 +159,7 @@ class MainWindow(QMainWindow):
         self.width_spin = QSpinBox()
         self.width_spin.setRange(40, 240)
         self.width_spin.setSuffix(" px")
+        self.width_spin.setFixedWidth(110)
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(33, 250)
         self.interval_spin.setSuffix(" мс")
@@ -209,10 +234,13 @@ class MainWindow(QMainWindow):
             enabled, threshold, key_button = self.resource_controls[name]
             enabled.setChecked(resource.enabled)
             threshold.setValue(resource.threshold)
-            key_button.key_label = resource.key
+            key_button.modifier = resource.modifier
             if resource.scan_code:
                 key_button.scan_code = resource.scan_code
                 key_button.extended = resource.extended
+            key_button.key_label = label_for_binding(
+                KeyBinding(key_button.scan_code, key_button.extended, key_button.modifier)
+            )
             key_button._refresh_text()
             enabled.stateChanged.connect(self._save_controls)
             threshold.valueChanged.connect(self._save_controls)
@@ -221,8 +249,8 @@ class MainWindow(QMainWindow):
         self.hold_duration_spin.setValue(self.settings.key_hold_ms)
         self.hold_duration_spin.valueChanged.connect(self._save_controls)
         self.width_spin.setValue(self.settings.bar_width_px)
-        self.interval_spin.setValue(self.settings.poll_interval_ms)
         self.width_spin.valueChanged.connect(self._save_controls)
+        self.interval_spin.setValue(self.settings.poll_interval_ms)
         self.interval_spin.valueChanged.connect(self._save_controls)
         if self.keyboard is None:
             self.auto_actions_check.setEnabled(False)
@@ -274,10 +302,12 @@ class MainWindow(QMainWindow):
             message = "Автонажатия включены. Ожидается падение ресурса ниже порога; уже низкое значение само по себе не вызывает нажатие. Убедись, что именно игра находится на переднем плане."
         self.auto_status_label.setText(message)
 
-    def _on_key_binding_changed(self, resource: str, label: str, scan_code: int, extended: bool) -> None:
+    def _on_key_binding_changed(
+        self, resource: str, label: str, scan_code: int, extended: bool, modifier: str
+    ) -> None:
         self._save_controls()
         self.status_label.setText(
-            f"{resource.upper()}: физическая клавиша {label}, scan code 0x{scan_code:02X}."
+            f"{resource.upper()}: назначено {label}, scan code 0x{scan_code:02X}."
         )
 
     def _save_controls(self, *_args) -> None:
@@ -288,7 +318,7 @@ class MainWindow(QMainWindow):
                 name,
                 ResourceSettings(
                     enabled.isChecked(), threshold.value(), key_button.key_label,
-                    key_button.scan_code, key_button.extended
+                    key_button.scan_code, key_button.extended, key_button.modifier
                 ),
             )
         self.settings.auto_actions_enabled = self.auto_actions_check.isChecked()
@@ -399,7 +429,9 @@ class MainWindow(QMainWindow):
                 continue
             try:
                 sent = self.keyboard.tap(
-                    KeyBinding(key_button.scan_code, key_button.extended),
+                    KeyBinding(
+                        key_button.scan_code, key_button.extended, key_button.modifier
+                    ),
                     self.hold_duration_spin.value(),
                 )
                 if sent:
@@ -437,7 +469,7 @@ class MainWindow(QMainWindow):
             for key in self.value_bars:
                 self.value_bars[key].setValue(0)
                 self.value_labels[key].setText("—")
-            self.status_label.setText("HP-бар не обнаружен. Это состояние не считается нулевым HP.")
+            self.status_label.setText(result.message)
             self._refresh_auto_status(detected=False)
             return
         values = {"hp": result.hp, "es": result.es, "mana": result.mana}

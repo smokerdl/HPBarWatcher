@@ -50,3 +50,34 @@ def test_legacy_settings_keep_auto_actions_disabled(tmp_path: Path):
     assert loaded.auto_actions_enabled is False
     assert loaded.key_hold_ms == 50
     assert loaded.hp.scan_code == 0
+
+
+def test_resource_modifier_round_trips(tmp_path: Path):
+    from app.config.settings import ResourceSettings
+
+    settings_file = tmp_path / "settings.json"
+    settings = AppSettings(
+        hp=ResourceSettings(True, 25.0, "Ctrl+Q", 0x10, False, "ctrl"),
+        mana=ResourceSettings(True, 50.0, "Shift+2", 0x03, False, "shift"),
+    )
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.hp.key == "Ctrl+Q"
+    assert loaded.hp.modifier == "ctrl"
+    assert loaded.mana.key == "Shift+2"
+    assert loaded.mana.modifier == "shift"
+
+
+def test_legacy_combined_key_label_is_parsed_when_modifier_field_is_missing(tmp_path: Path):
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        '{"hp": {"enabled": true, "threshold": 30, "key": "Shift+Q", "scan_code": 16}}',
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.hp.key == "Q"
+    assert loaded.hp.modifier == "shift"

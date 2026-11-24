@@ -38,6 +38,7 @@ class ResourceSettings:
     key: str = "1"
     scan_code: int = 0
     extended: bool = False
+    modifier: str | None = None
 
 
 @dataclass
@@ -46,6 +47,7 @@ class AppSettings:
     always_on_top: bool = False
     auto_actions_enabled: bool = False
     key_hold_ms: int = 50
+    # Full inner width shared by HP, ES and Mana bars, in captured pixels.
     bar_width_px: int = 82
     poll_interval_ms: int = 50
     hp: ResourceSettings = field(default_factory=lambda: ResourceSettings(True, 30.0, "1"))
@@ -103,9 +105,25 @@ def _resource_from_dict(data: Any, fallback: ResourceSettings) -> ResourceSettin
         threshold = max(0.0, min(100.0, threshold))
     except (TypeError, ValueError):
         threshold = fallback.threshold
+
     key = str(data.get("key", fallback.key)).strip()[:20] or fallback.key
+    modifier_value = str(data.get("modifier", "")).strip().lower()
+    modifier = modifier_value if modifier_value in ("ctrl", "shift") else None
+
+    # Also accept a combined display label in settings written by an
+    # intermediate development build that did not persist modifier separately.
+    if modifier is None and "+" in key:
+        prefix, primary = key.split("+", 1)
+        if prefix.strip().lower() in ("ctrl", "shift"):
+            modifier = prefix.strip().lower()
+            key = primary.strip() or fallback.key
+
     scan_code = _bounded_int(data.get("scan_code", 0), 0, 0xFF, 0)
     return ResourceSettings(
-        bool(data.get("enabled", fallback.enabled)), threshold, key,
-        scan_code, bool(data.get("extended", False))
+        enabled=bool(data.get("enabled", fallback.enabled)),
+        threshold=threshold,
+        key=key,
+        scan_code=scan_code,
+        extended=bool(data.get("extended", False)),
+        modifier=modifier,
     )
