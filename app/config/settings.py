@@ -47,8 +47,10 @@ class AppSettings:
     always_on_top: bool = False
     auto_actions_enabled: bool = False
     key_hold_ms: int = 50
-    # Full inner width shared by HP, ES and Mana bars, in captured pixels.
+    # Full inner width shared by HP, ES and Mana bars at the calibration resolution.
     bar_width_px: int = 82
+    calibration_screen_width_px: int | None = None
+    calibration_screen_height_px: int | None = None
     poll_interval_ms: int = 50
     hp: ResourceSettings = field(default_factory=lambda: ResourceSettings(True, 30.0, "1"))
     es: ResourceSettings = field(default_factory=lambda: ResourceSettings(True, 20.0, "3"))
@@ -73,6 +75,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
             auto_actions_enabled=bool(data.get("auto_actions_enabled", False)),
             key_hold_ms=_bounded_int(data.get("key_hold_ms", 50), 20, 500, 50),
             bar_width_px=_bounded_int(data.get("bar_width_px", 82), 40, 240, 82),
+            calibration_screen_width_px=_optional_positive_int(
+                data.get("calibration_screen_width_px")
+            ),
+            calibration_screen_height_px=_optional_positive_int(
+                data.get("calibration_screen_height_px")
+            ),
             poll_interval_ms=_bounded_int(data.get("poll_interval_ms", 50), 33, 250, 50),
             hp=_resource_from_dict(data.get("hp"), ResourceSettings(True, 30.0, "1")),
             es=_resource_from_dict(data.get("es"), ResourceSettings(True, 20.0, "3")),
@@ -95,6 +103,16 @@ def _bounded_int(value: Any, minimum: int, maximum: int, fallback: int) -> int:
         return max(minimum, min(maximum, int(value)))
     except (TypeError, ValueError):
         return fallback
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if 0 < parsed <= 32768 else None
 
 
 def _resource_from_dict(data: Any, fallback: ResourceSettings) -> ResourceSettings:
