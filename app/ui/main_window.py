@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, QRect
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint
+from PySide6.QtGui import QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -27,7 +27,7 @@ from app.automation.keyboard_input import KeyBinding, KeyboardSender, label_for_
 from app.automation.trigger_manager import ThresholdTrigger
 from app.config.settings import Region, ResourceSettings, load_settings, save_settings
 from app.ui.key_capture import KeyCaptureButton
-from app.vision.bar_detector import BarDetector, ResourceReadout
+from app.vision.bar_detector import BarDetector, ResourceReadout, scaled_bar_width_px
 from app.vision.screen_capture import ScreenCapture
 from app.ui.region_selector import RegionSelector
 
@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("HPBarWatcher — диагностика")
         self.setMinimumSize(700, 800)
         self.settings = load_settings()
+        self._selected_screen = None
         self.capture: ScreenCapture | None = None
         self.detector = BarDetector(self.settings.bar_width_px)
         self._selector: RegionSelector | None = None
@@ -160,6 +161,11 @@ class MainWindow(QMainWindow):
         self.width_spin.setRange(40, 240)
         self.width_spin.setSuffix(" px")
         self.width_spin.setFixedWidth(110)
+        self.width_spin.setToolTip(
+            "Полная ширина на разрешении калибровки. При изменении разрешения "
+            "экрана ширина автоматически масштабируется. Изменение этого "
+            "значения задаёт новую калибровку для текущего разрешения."
+        )
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(33, 250)
         self.interval_spin.setSuffix(" мс")
@@ -249,7 +255,7 @@ class MainWindow(QMainWindow):
         self.hold_duration_spin.setValue(self.settings.key_hold_ms)
         self.hold_duration_spin.valueChanged.connect(self._save_controls)
         self.width_spin.setValue(self.settings.bar_width_px)
-        self.width_spin.valueChanged.connect(self._save_controls)
+        self.width_spin.valueChanged.connect(self._on_bar_width_changed)
         self.interval_spin.setValue(self.settings.poll_interval_ms)
         self.interval_spin.valueChanged.connect(self._save_controls)
         if self.keyboard is None:
@@ -330,6 +336,65 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             self.status_label.setText(f"Не удалось сохранить настройки: {exc}")
 
+    def _current_screen_resolution(self) -> tuple[int, int] | None:
+        """Return the physical pixel dimensions of the screen containing the ROI."""
+        screen = self._selected_screen
+        if screen is None and self.settings.region is not None:
+            region = self.settings.region
+            center = QPoint(
+                region.x + region.width // 2,
+                region.y + region.height // 2,
+            )
+            screen = QGuiApplication.screenAt(center)
+        if screen is None:
+            screen = self.screen()
+        if screen is None:
+            window_handle = self.windowHandle()
+            screen = window_handle.screen() if window_handle is not None else None
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+
+        try:
+            geometry = screen.geometry()
+            device_pixel_ratio = max(1.0, float(screen.devicePixelRatio()))
+            width = int(round(geometry.width() * device_pixel_ratio))
+            height = int(round(geometry.height() * device_pixel_ratio))
+        except RuntimeError:
+            return None
+
+        return (width, height) if width > 0 and height > 0 else None
+
+    def _store_calibration_resolution(self, force: bool = False) -> bool:
+        resolution = self._current_screen_resolution()
+        if resolution is None:
+            return False
+
+        changed = False
+        if force or self.settings.calibration_screen_width_px is None:
+            self.settings.calibration_screen_width_px = resolution[0]
+            changed = True
+        if force or self.settings.calibration_screen_height_px is None:
+            self.settings.calibration_screen_height_px = resolution[1]
+            changed = True
+        return changed
+
+    def _update_detector_bar_width(self) -> None:
+        resolution = self._current_screen_resolution()
+        effective_width = scaled_bar_width_px(
+            self.settings.bar_width_px,
+            self.settings.calibration_screen_width_px,
+            resolution[0] if resolution is not None else None,
+        )
+        self.detector.set_bar_width_px(effective_width)
+
+    def _on_bar_width_changed(self, *_args) -> None:
+        # A manual edit defines the configured width at the current resolution.
+        self._store_calibration_resolution(force=True)
+        self._save_controls()
+        self._update_detector_bar_width()
+
     def _set_region_label(self, region: Region) -> None:
         self.region_label.setText(
             f"X={region.x}, Y={region.y}, ширина={region.width}, высота={region.height}"
@@ -342,6 +407,7 @@ class MainWindow(QMainWindow):
         if screen is None:
             QMessageBox.warning(self, "Выбор области", "Не удалось определить монитор.")
             return
+        self._selected_screen = screen
         self.hide()
         self._selector = RegionSelector(screen.geometry())
         self._selector.region_selected.connect(self._region_selected)
@@ -352,6 +418,7 @@ class MainWindow(QMainWindow):
 
     def _region_selected(self, rect: QRect) -> None:
         self.settings.region = Region(rect.x(), rect.y(), rect.width(), rect.height())
+        self._store_calibration_resolution()
         self._set_region_label(self.settings.region)
         self._save_controls()
         self.show()
@@ -368,7 +435,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка захвата экрана", str(exc))
             return
+        # Existing settings from older versions have no calibration metadata.
+        # Seed it once from the current monitor without changing other settings.
+        if self._store_calibration_resolution():
+            self._save_controls()
         self.detector = BarDetector(self.width_spin.value())
+        self._update_detector_bar_width()
         for trigger in self.triggers.values():
             trigger.reset()
         self.timer.start(self.interval_spin.value())
@@ -397,6 +469,7 @@ class MainWindow(QMainWindow):
         if self.capture is None or self.settings.region is None:
             return
         try:
+            self._update_detector_bar_width()
             frame = self.capture.capture(self.settings.region)
             self._show_preview(frame)
             result = self.detector.detect(frame)
