@@ -34,6 +34,24 @@ class ResourceReadout:
     message: str = "Пара HP/Mana не обнаружена"
 
 
+def scaled_bar_width_px(
+    configured_width_px: int,
+    calibration_screen_width_px: int | None,
+    current_screen_width_px: int | None,
+) -> int:
+    """Scale a calibrated bar width proportionally to the current screen width."""
+    base_width = max(20, int(configured_width_px))
+    if calibration_screen_width_px is None or current_screen_width_px is None:
+        return base_width
+
+    reference_width = int(calibration_screen_width_px)
+    current_width = int(current_screen_width_px)
+    if reference_width <= 0 or current_width <= 0:
+        return base_width
+
+    return max(20, int(round(base_width * current_width / reference_width)))
+
+
 class BarDetector:
     """Find and track a translated pair of resource bars in the selected region.
 
@@ -51,10 +69,15 @@ class BarDetector:
     MIN_CONFIDENCE = 0.62
 
     def __init__(self, bar_width_px: int = 82, min_fill_px: int = 1) -> None:
-        self.bar_width_px = max(20, int(bar_width_px))
+        self.bar_width_px = 20
+        self.set_bar_width_px(bar_width_px)
         self.min_fill_px = max(1, int(min_fill_px))
         self._last_position: tuple[float, float, float] | None = None
         self._missed_frames = 0
+
+    def set_bar_width_px(self, bar_width_px: int) -> None:
+        """Update the full calibrated width without discarding position tracking."""
+        self.bar_width_px = max(20, int(bar_width_px))
 
     def reset(self) -> None:
         """Forget the previous position (for example when monitoring restarts)."""
