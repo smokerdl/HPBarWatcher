@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.vision.bar_detector import BarDetector
+from app.vision.bar_detector import BarDetector, scaled_bar_width_px
 
 
 BAR_WIDTH = 82
@@ -53,3 +53,40 @@ def test_one_colored_bar_is_not_enough_to_confirm_character_hud():
     image[13:18, 24:106] = HP_GREEN
     result = BarDetector(BAR_WIDTH).detect(image)
     assert not result.detected
+
+
+@pytest.mark.parametrize(
+    ("current_width", "expected_width"),
+    [
+        (1920, 82),
+        (1600, 68),
+        (1280, 55),
+        (2560, 109),
+    ],
+)
+def test_bar_width_scales_with_current_screen_width(current_width, expected_width):
+    assert scaled_bar_width_px(82, 1920, current_width) == expected_width
+
+
+def test_scaled_width_gives_full_resources_at_1600x900_scale():
+    effective_width = scaled_bar_width_px(82, 1920, 1600)
+    result = BarDetector(effective_width).detect(make_sample(68, 0, 68))
+
+    assert result.detected
+    assert result.hp == pytest.approx(100.0, abs=0.1)
+    assert result.mana == pytest.approx(100.0, abs=0.1)
+
+
+@pytest.mark.parametrize(
+    ("reference_width", "current_width"),
+    [
+        (None, 1600),
+        (1920, None),
+        (0, 1600),
+        (1920, 0),
+    ],
+)
+def test_missing_or_invalid_screen_width_keeps_configured_value(
+    reference_width, current_width
+):
+    assert scaled_bar_width_px(82, reference_width, current_width) == 82
