@@ -50,6 +50,37 @@ def test_legacy_settings_keep_auto_actions_disabled(tmp_path: Path):
     assert loaded.auto_actions_enabled is False
     assert loaded.key_hold_ms == 50
     assert loaded.hp.scan_code == 0
+    assert loaded.calibration_screen_width_px is None
+    assert loaded.calibration_screen_height_px is None
+
+
+def test_calibration_resolution_round_trips(tmp_path: Path):
+    settings_file = tmp_path / "settings.json"
+    settings = AppSettings(
+        bar_width_px=82,
+        calibration_screen_width_px=1920,
+        calibration_screen_height_px=1080,
+    )
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.bar_width_px == 82
+    assert loaded.calibration_screen_width_px == 1920
+    assert loaded.calibration_screen_height_px == 1080
+
+
+def test_invalid_calibration_resolution_is_ignored(tmp_path: Path):
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        '{"calibration_screen_width_px": 0, "calibration_screen_height_px": "bad"}',
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.calibration_screen_width_px is None
+    assert loaded.calibration_screen_height_px is None
 
 
 def test_resource_modifier_round_trips(tmp_path: Path):
